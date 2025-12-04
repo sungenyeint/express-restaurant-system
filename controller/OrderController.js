@@ -40,7 +40,7 @@ export const store = async (req, res) => {
     .populate("items.menu");
 
   // emit via socket.io if available
-  if (global.io) global.io.emit("order-created", populated);
+  if (global.io) global.io.emit("order-created", [populated, req.user.role]);
   res.json(populated);
 };
 
@@ -78,7 +78,7 @@ export const updateStatus = async (req, res) => {
     // do not block response on table updates
   }
 
-  if (global.io) global.io.emit("order-status-changed", updated);
+  if (global.io) global.io.emit("order-status-changed", [updated, req.user.role]);
   res.json(updated);
 };
 
@@ -131,7 +131,7 @@ export const updateOrder = async (req, res) => {
     // do not block response on table updates
   }
 
-  if (global.io) global.io.emit("order-updated", updated);
+  if (global.io) global.io.emit("order-updated", [updated, req.user.role]);
   res.json(updated);
 };
 

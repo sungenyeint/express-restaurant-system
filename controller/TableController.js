@@ -19,3 +19,12 @@ export const destroy = async (req, res) => {
   await Table.findByIdAndDelete(req.params.id);
   res.json({ success: true });
 };
+
+export const updateStatus = async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body || {};
+
+  if (!status) return res.status(400).json({ message: "status is required" });
+  const item = await Table.findByIdAndUpdate(id, { status }, { new: true });
+  res.json(item);
+};
