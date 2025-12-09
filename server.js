@@ -8,6 +8,7 @@ import userRoutes from "./routes/user.js";
 import authRoutes from "./routes/auth.js";
 import menuRoutes from "./routes/menu.js";
 import orderRoutes from "./routes/order.js";
+import printRoutes from "./routes/print.js";
 import tableRoutes from "./routes/table.js";
 import categoryRoutes from "./routes/category.js";
 import { auth } from "./middleware/authMiddleware.js";
@@ -31,6 +32,7 @@ app.use("/api/tables", tableRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/menus", auth, menuRoutes);
 app.use("/api/orders", auth, orderRoutes);
+app.use("/api", printRoutes);
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
