@@ -1,5 +1,6 @@
 import Order from "../models/Order.js";
 import Table from "../models/Table.js";
+import { resolveRange, dateFormat } from "../helpers/format.js";
 
 export const getAll = async (req, res) => {
   const orders = await Order.find()
@@ -51,14 +52,16 @@ export const updateStatus = async (req, res) => {
   if (!status) return res.status(400).json({ message: "status is required" });
 
   const updatePayload = { status };
-  if (status === 'paid') {
+  if (status === "paid") {
     // attach payment details if provided
-    if (typeof amountPaid === 'number') updatePayload.amountPaid = amountPaid;
+    if (typeof amountPaid === "number") updatePayload.amountPaid = amountPaid;
     updatePayload.paidAt = new Date();
     if (req.user && req.user._id) updatePayload.paidBy = req.user._id;
   }
 
-  const updated = await Order.findByIdAndUpdate(id, updatePayload, { new: true })
+  const updated = await Order.findByIdAndUpdate(id, updatePayload, {
+    new: true,
+  })
     .populate("table")
     .populate("items.menu")
     .populate("paidBy");
@@ -78,7 +81,8 @@ export const updateStatus = async (req, res) => {
     // do not block response on table updates
   }
 
-  if (global.io) global.io.emit("order-status-changed", [updated, req.user.role]);
+  if (global.io)
+    global.io.emit("order-status-changed", [updated, req.user.role]);
   res.json(updated);
 };
 
@@ -136,168 +140,77 @@ export const updateOrder = async (req, res) => {
 };
 
 export const getAnalytics = async (req, res) => {
-  // Support direct date range, month selection or year selection.
-  // Query params:
-  // - start=YYYY-MM-DD & end=YYYY-MM-DD => group by day (default)
-  // - month=YYYY-MM => group by day for that month
-  // - year=YYYY => group by month for that year
-  // - fallback: timeframe=day|month|year behavior as before
+  const { start, end, groupBy } = resolveRange(req.query);
+  const format = dateFormat(groupBy);
 
-  const now = new Date();
-  let startDate = null;
-  let endDate = null;
-  let groupBy = 'month';
-
-  if (req.query.start && req.query.end) {
-    // explicit date range
-    startDate = new Date(req.query.start.toString());
-    endDate = new Date(req.query.end.toString());
-    // include the end day fully
-    endDate.setHours(23, 59, 59, 999);
-    groupBy = 'day';
-  } else if (req.query.month) {
-    // single month selected
-    const [y, m] = req.query.month.toString().split('-').map(Number);
-    startDate = new Date(y, (m || 1) - 1, 1);
-    endDate = new Date(y, (m || 1), 0);
-    endDate.setHours(23,59,59,999);
-    groupBy = 'day';
-  } else if (req.query.year) {
-    const y = Number(req.query.year);
-    startDate = new Date(y, 0, 1);
-    endDate = new Date(y, 11, 31, 23, 59, 59, 999);
-    groupBy = 'month';
-  } else {
-    // fallback to timeframe param
-    const timeframe = (req.query.timeframe || 'month').toString();
-    if (timeframe === 'day') {
-      groupBy = 'day';
-      startDate = new Date(now);
-      startDate.setDate(now.getDate() - 29); // last 30 days
-      endDate = new Date(now);
-    } else if (timeframe === 'month') {
-      groupBy = 'month';
-      startDate = new Date(now);
-      startDate.setMonth(now.getMonth() - 11);
-      startDate.setDate(1);
-      endDate = new Date(now);
-    } else {
-      groupBy = 'year';
-      startDate = new Date(now);
-      startDate.setFullYear(now.getFullYear() - 4);
-      startDate.setMonth(0,1);
-      endDate = new Date(now);
-    }
-    // normalize endDate to end of day
-    endDate.setHours(23,59,59,999);
-  }
-
-  if (!startDate || !endDate) return res.status(400).json({ message: 'invalid date range' });
-
-  // choose date format for grouping
-  let dateFormat = '%Y-%m';
-  if (groupBy === 'day') dateFormat = '%Y-%m-%d';
-  else if (groupBy === 'year') dateFormat = '%Y';
-
-  // Aggregate revenue per bucket using paidAt and amountPaid (fallback to total)
   const agg = await Order.aggregate([
-    { $match: { status: 'paid', paidAt: { $gte: startDate, $lte: endDate } } },
+    { $match: { status: "paid", paidAt: { $gte: start, $lte: end } } },
     {
-      $addFields: {
-        revenue: {
-          $cond: [{ $ifNull: ['$amountPaid', false] }, '$amountPaid', '$total'],
-        },
+      $project: {
+        revenue: { $ifNull: ["$amountPaid", "$total"] },
+        paidAt: 1,
       },
     },
     {
       $group: {
-        _id: { $dateToString: { format: dateFormat, date: '$paidAt' } },
-        revenue: { $sum: '$revenue' },
+        _id: { $dateToString: { format, date: "$paidAt" } },
+        revenue: { $sum: "$revenue" },
         count: { $sum: 1 },
       },
     },
     { $sort: { _id: 1 } },
   ]);
 
-  const bucketsMap = new Map();
-  for (const row of agg) bucketsMap.set(row._id, { revenue: row.revenue || 0, count: row.count || 0 });
+  const map = new Map(agg.map((r) => [r._id, r]));
 
-  // Build continuous buckets from startDate..endDate according to groupBy
   const buckets = [];
-  const cursor = new Date(startDate);
-  while (cursor <= endDate) {
-    let label = '';
-    if (groupBy === 'day') {
+  const cursor = new Date(start);
+
+  while (cursor <= end) {
+    let label;
+    if (groupBy === "day") {
       label = cursor.toISOString().slice(0, 10);
       cursor.setDate(cursor.getDate() + 1);
-    } else if (groupBy === 'month') {
-      const y = cursor.getFullYear();
-      const m = String(cursor.getMonth() + 1).padStart(2, '0');
-      label = `${y}-${m}`;
+    } else if (groupBy === "month") {
+      label = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(
+        2,
+        "0"
+      )}`;
       cursor.setMonth(cursor.getMonth() + 1);
     } else {
       label = String(cursor.getFullYear());
       cursor.setFullYear(cursor.getFullYear() + 1);
     }
-    const val = bucketsMap.get(label) || { revenue: 0, count: 0 };
-    buckets.push({ label, revenue: val.revenue, count: val.count });
+
+    const row = map.get(label) || { revenue: 0, count: 0 };
+    buckets.push({ label, revenue: row.revenue, count: row.count });
   }
 
-  const totalOrders = buckets.reduce((s, b) => s + (b.count || 0), 0);
-  const totalRevenue = buckets.reduce((s, b) => s + (b.revenue || 0), 0);
-
-  // Comparison for month/year selections: compare selected month/year with previous
-  let compare = null;
-  if (req.query.month) {
-    const [y, m] = req.query.month.toString().split('-').map(Number);
-    const mm = String(m).padStart(2, '0');
-    const curPrefix = `${y}-${mm}`; // buckets are day labels YYYY-MM-DD
-    const prevDate = new Date(y, m - 2, 1); // previous month (m-2 because Date month is 0-based)
-    const prevPrefix = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
-
-    let currentMonthRevenue = 0;
-    let prevMonthRevenue = 0;
-    for (const [key, val] of bucketsMap.entries()) {
-      if (key.startsWith(curPrefix)) currentMonthRevenue += (val.revenue || 0);
-      if (key.startsWith(prevPrefix)) prevMonthRevenue += (val.revenue || 0);
-    }
-    compare = { currentMonthRevenue, prevMonthRevenue };
-  } else if (req.query.year) {
-    const y = Number(req.query.year);
-    const curPrefix = `${y}-`; // buckets are month labels YYYY-MM
-    const prevPrefix = `${y - 1}-`;
-
-    let currentMonthRevenue = 0;
-    let prevMonthRevenue = 0;
-    for (const [key, val] of bucketsMap.entries()) {
-      if (key.startsWith(curPrefix)) currentMonthRevenue += (val.revenue || 0);
-      if (key.startsWith(prevPrefix)) prevMonthRevenue += (val.revenue || 0);
-    }
-    compare = { currentMonthRevenue, prevMonthRevenue };
-  }
-
-  res.json({ totalOrders, totalRevenue, buckets, compare });
+  res.json({
+    totalOrders: buckets.reduce((s, b) => s + b.count, 0),
+    totalRevenue: buckets.reduce((s, b) => s + b.revenue, 0),
+    buckets,
+  });
 };
 
 export const getBestSellers = async (req, res) => {
-  // Aggregate items across paid orders and return top sellers
-  const agg = await Order.aggregate([
-    { $match: { status: 'paid' } },
-    { $unwind: '$items' },
-    { $group: { _id: '$items.menu', qtySold: { $sum: '$items.qty' } } },
+  const data = await Order.aggregate([
+    { $match: { status: "paid" } },
+    { $unwind: "$items" },
+    { $group: { _id: "$items.menu", qtySold: { $sum: "$items.qty" } } },
     {
       $lookup: {
-        from: 'menuitems',
-        localField: '_id',
-        foreignField: '_id',
-        as: 'menu'
-      }
+        from: "menuitems",
+        localField: "_id",
+        foreignField: "_id",
+        as: "menu",
+      },
     },
-    { $unwind: { path: '$menu', preserveNullAndEmptyArrays: true } },
-    { $project: { menuId: '$_id', name: '$menu.name', qtySold: 1 } },
+    { $unwind: { path: "$menu", preserveNullAndEmptyArrays: true } },
+    { $project: { menuId: "$_id", name: "$menu.name", qtySold: 1 } },
     { $sort: { qtySold: -1 } },
-    { $limit: 10 }
+    { $limit: 10 },
   ]);
 
-  res.json(agg);
+  res.json(data);
 };
