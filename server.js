@@ -25,7 +25,6 @@ app.get('/health', (req, res) => {
   res.status(200).send("OK");
 });
 
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/tables", tableRoutes);
